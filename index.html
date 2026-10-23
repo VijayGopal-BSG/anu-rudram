@@ -295,14 +295,16 @@ details[open] > summary .chev{transform:rotate(90deg)}
   }
 
   // line boundaries over candidate cut points (pauses and energy dips), DP on line lengths (matras)
-  function segmentLines(F, lw) {
+  function segmentLines(F, lw, opt) {
+    const LDL = (opt && opt.lambda) || 16, GB = (opt && opt.gapBonus) || 3;
     const n = F.n, N = lw.length, W = lw.reduce((x, y) => x + y, 0);
     const cand = new Set([0, n]);
     const bonus = new Map();
-    for (let c = 0; c < n - 1; c++) if (F.gap[c] > 0) { cand.add(c + 1); bonus.set(c + 1, -6 * Math.min(1, F.gap[c] / 40) - 1); }
+    for (let c = 0; c < n - 1; c++) if (F.gap[c] > 0) { cand.add(c + 1); bonus.set(c + 1, -GB * (0.5 + 0.5 * Math.min(1, F.gap[c] / 40))); }
     for (let c = 8; c < n - 8; c++) {
       let isMin = true; for (let j = c - 7; j <= c + 7; j++) if (F.E[j] < F.E[c]) { isMin = false; break; }
-      if (isMin && !cand.has(c)) { let mx = -1e9; for (let j = c - 15; j <= c + 15; j++) if (j >= 0 && j < n) mx = Math.max(mx, F.E[j]); cand.add(c); bonus.set(c, (F.E[c] - mx) / 8); }
+      let nearGap = false; for (let j = c - 4; j <= c + 4; j++) if (j >= 0 && j < n && F.gap[j] > 0) { nearGap = true; break; }
+      if (isMin && !nearGap && !cand.has(c)) { let mx = -1e9; for (let j = c - 15; j <= c + 15; j++) if (j >= 0 && j < n) mx = Math.max(mx, F.E[j]); cand.add(c); bonus.set(c, Math.max(-1, (F.E[c] - mx) / 20)); }
     }
     const P = [...cand].sort((x, y) => x - y), K = P.length;
     const INF = 1e18, D = new Float64Array((N + 1) * K).fill(INF), BP = new Int32Array((N + 1) * K).fill(-1);
@@ -319,7 +321,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
           const L = b - P[i]; if (L < minL) continue; if (L > maxL) break;
           const prev = D[(k - 1) * K + i]; if (prev >= INF) continue;
           const r = Math.log(L / e);
-          const c = prev + 0.6 * r * r + (k < N ? (bonus.get(b) || 0) : 0);
+          const c = prev + LDL * r * r + (k < N ? (bonus.get(b) || 0) : 0);
           if (c < best) { best = c; arg = i; }
         }
         D[k * K + j] = best; BP[k * K + j] = arg;
@@ -550,7 +552,38 @@ details[open] > summary .chev{transform:rotate(90deg)}
     return Object.assign(base, { ok: true, score, lines: results, F: opt.keepFeatures ? F : undefined });
   }
 
-  const api = { SR, HOP, FRAME_S, makeResampler, PitchTracker, features, segment, analyze, comments, median, pct, st };
+  // Whole-recording line alignment (auto-marking line times in the reference video).
+  // frames: pitch-tracker frames; valid: optional Uint8Array (0 = ignore frame, e.g. an advert); lines: in chant order.
+  // Returns start/end frame indices (original frames) and, per start, whether it falls at a pause.
+  function alignLines(frames, lines, opt) {
+    opt = opt || {};
+    if (opt.valid) frames = frames.map((f, i) => opt.valid[i] ? f : { rms: 0, f0: 0, ap: 1 });
+    const F = features(frames);
+    const Fc = compress(F, F.start, F.end);
+    const lw = lines.map(l => l.syl.reduce((s, x) => s + x.wt, 0));
+    const B = segmentLines(Fc, lw);
+    if (!B) return { ok: false };
+    const N = lines.length;
+    // refine boundaries that do not fall at a pause: syllable-level DP over the two neighbouring lines
+    const isGapAt = c => (Fc.gap[c - 1] > 0 || Fc.gap[c - 2] > 0 || Fc.gap[c] > 0);
+    for (let k = 1; k < N; k++) {
+      if (isGapAt(B[k])) continue;
+      const w = lines[k - 1].syl.map(s => s.wt).concat(lines[k].syl.map(s => s.wt));
+      if (B[k + 1] - B[k - 1] < w.length * 2) continue;
+      const sb = segment(Fc, B[k - 1], B[k + 1], w, {});
+      if (sb) B[k] = sb[lines[k - 1].syl.length];
+    }
+    const starts = [], ends = [], atPause = [];
+    for (let k = 0; k < N; k++) {
+      const c0 = B[k], c1 = B[k + 1];
+      starts.push(Fc.idx[Math.min(c0, Fc.n - 1)]);
+      ends.push(Fc.idx[Math.max(c0, c1 - 1)] + 1);
+      atPause.push(k === 0 || (Fc.gap[c0 - 1] > 0 || Fc.gap[c0 - 2] > 0 || Fc.gap[c0] > 0));
+    }
+    return { ok: true, starts, ends, atPause, pauses: atPause.filter(Boolean).length };
+  }
+
+  const api = { SR, HOP, FRAME_S, makeResampler, PitchTracker, features, segment, analyze, alignLines, comments, median, pct, st };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.ChantEngine = api;
 })(typeof self !== 'undefined' ? self : this);
 
@@ -691,12 +724,12 @@ details[open] > summary .chev{transform:rotate(90deg)}
   const WORKLET = `class Cap extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(2048);this.n=0}process(i){const c=i[0]&&i[0][0];if(c){for(let k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===2048){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}registerProcessor('cap',Cap);`;
   class Recorder {
     constructor() { this.ctx = null; this.mode = null; }
-    async start(onFrame) {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('This browser cannot use the microphone here. Open the page in Safari (iPhone) or Chrome (Mac).');
+    async start(onFrame, givenStream) {
+      if (!givenStream && (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)) throw new Error('This browser cannot use the microphone here. Open the page in Safari (iPhone) or Chrome (Mac).');
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!this.ctx) this.ctx = new AC();
       await this.ctx.resume();
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+      this.stream = givenStream || await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
       this.src = this.ctx.createMediaStreamSource(this.stream);
       this.rs = E.makeResampler(this.ctx.sampleRate);
       this.pt = new E.PitchTracker();
