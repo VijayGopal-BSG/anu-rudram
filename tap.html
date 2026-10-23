@@ -228,14 +228,15 @@ details[open] > summary .chev{transform:rotate(90deg)}
 
   // drop silent runs (>= 0.25 s) inside [a,b): pauses between lines or words are not syllables.
   // Returns compressed features with idx (compressed -> original frame) and gap (frames removed after each frame).
-  function compress(F, a, b) {
-    const sil = t => !F.voiced[t] && F.E[t] < F.actGate + 4;
+  function compress(F, a, b, opt) {
+    const minGap = (opt && opt.minGap) || 25, quiet = opt && opt.quiet;
+    const sil = t => (!F.voiced[t] && F.E[t] < F.actGate + 4) || (quiet && quiet[t]);
     const keep = [], gap = [];
     let t = a;
     while (t < b) {
       if (sil(t)) {
         let u = t; while (u < b && sil(u)) u++;
-        if (u - t >= 25) { // remove, keeping 2 frames each side
+        if (u - t >= minGap) { // remove, keeping 2 frames each side
           for (let j = t; j < Math.min(t + 2, u); j++) { keep.push(j); gap.push(0); }
           if (gap.length) gap[gap.length - 1] = (u - 2) - (t + 2);
           for (let j = Math.max(t + 2, u - 2); j < u; j++) { keep.push(j); gap.push(0); }
@@ -581,9 +582,23 @@ details[open] > summary .chev{transform:rotate(90deg)}
     opt = opt || {};
     if (opt.valid) frames = frames.map((f, i) => opt.valid[i] ? f : { rms: 0, f0: 0, ap: 1 });
     const F = features(frames);
-    const Fc = compress(F, F.start, F.end);
+    // pauses in a produced recording are rarely silent (reverb, a drone): also count frames well below the local level
+    let quiet = null;
+    const rel = opt.relDip === undefined ? 12 : opt.relDip;
+    if (rel > 0) {
+      quiet = new Uint8Array(F.n);
+      const W = 150, step = 5;
+      for (let t = F.start; t < F.end; t++) {
+        if (t % 25 === 0 || !quiet.loc) {
+          const s = []; for (let j = Math.max(F.start, t - W); j < Math.min(F.end, t + W); j += step) s.push(F.E[j]);
+          quiet.loc = pct(s, 0.7);
+        }
+        if (F.E[t] < quiet.loc - rel) quiet[t] = 1;
+      }
+    }
+    const Fc = compress(F, F.start, F.end, { minGap: opt.minGap || 15, quiet });
     const lw = lines.map(l => l.syl.reduce((s, x) => s + x.wt, 0));
-    const B = segmentLines(Fc, lw);
+    const B = segmentLines(Fc, lw, { lambda: opt.lambda, gapBonus: opt.gapBonus });
     if (!B) return { ok: false };
     const N = lines.length;
     // refine boundaries that do not fall at a pause: syllable-level DP over the two neighbouring lines
@@ -918,6 +933,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (autoRunning) return;
     const v = st.video, msg = h => { $('#automsg').innerHTML = h; };
     const cs = parseMS($('#cstart').value); if (cs != null) { st.cstart[v] = cs; save(); }
+    if (v === 'namakam') ['G1', 'G2', 'G3'].forEach(k => { st.lines[k] = { v: 'namakam', skip: true }; }); // never in this video
     const lines = (window.__autoLines || linesOf(v)).filter(l => !(st.lines[l.label] && st.lines[l.label].skip));
     let stream;
     try {
@@ -931,11 +947,15 @@ details[open] > summary .chev{transform:rotate(90deg)}
     try {
       await ytp.ensure(v);
       const p = ytp.player;
-      const start = chantStart(v), dur = p.getDuration() || 0;
-      p.seekTo(start, true); p.setPlaybackRate(1); p.playVideo();
+      const start = chantStart(v);
+      const vd = p.getVideoData ? p.getVideoData() : null;
+      if (!vd || vd.video_id !== S.VIDEOS[v]) p.loadVideoById({ videoId: S.VIDEOS[v], startSeconds: start }); // switched video: load it properly
+      else { p.seekTo(start, true); p.playVideo(); }
+      p.setPlaybackRate(1);
       // wait until it is really playing from the start point
       for (let i = 0; i < 100; i++) { await new Promise(r => setTimeout(r, 100)); if (p.getPlayerState() === 1 && p.getCurrentTime() >= start - 0.5) break; }
       await rec.start(null, stream);
+      const dur = p.getDuration() || 0;
       const t0 = Date.now();
       await new Promise(resolve => {
         const poll = () => {
@@ -944,7 +964,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
           const n = rec.pt ? rec.pt.frames.length : 0;
           polls.push([n, vt, stt === 1 && vt > lastVT + 0.02]);
           lastVT = vt;
-          const pct = dur > start ? Math.min(100, (vt - start) / (dur - start) * 100) : 0;
+          const pct = dur > start ? Math.max(0, Math.min(100, (vt - start) / (dur - start) * 100)) : 0;
           $('#autolvl').style.width = pct.toFixed(1) + '%';
           msg(`Listening… ${fmtMS(Math.max(0, vt - start))} of ${fmtMS(Math.max(0, dur - start))}. Keep this tab open and the video's sound on. <button class="chip" id="autostop">Stop</button>`);
           const sb = $('#autostop'); if (sb) sb.onclick = () => { autoRunning = false; };
@@ -964,20 +984,31 @@ details[open] > summary .chev{transform:rotate(90deg)}
         const [f0, v0] = polls[k - 1], [f1, v1, ok] = polls[k];
         for (let f = f0; f < Math.min(f1, n); f++) { valid[f] = ok ? 1 : 0; vtime[f] = ok ? v0 + (v1 - v0) * (f - f0) / Math.max(1, f1 - f0) : v1; }
       }
-      const r = window.ChantEngine.alignLines(frames, lines, { valid });
-      if (!r.ok) { msg('<span class="bad">I could not place the lines in that recording.</span> Check the start time and try again, or mark by hand.'); return; }
-      lines.forEach((l, i) => {
-        const s = vtime[Math.min(n - 1, r.starts[i])], e = vtime[Math.min(n - 1, r.ends[i] - 1)];
-        st.lines[l.label] = { v, s: Math.max(0, +(s - 0.4).toFixed(2)), e: +(Math.max(s + 0.5, e + 0.2)).toFixed(2), endSet: true, auto: true, pause: !!r.atPause[i] };
-      });
-      st.flags = st.flags.filter(k => !lines.some(l => l.label === k));
-      save(); render();
+      // kept in memory (pitch and loudness only, no sound) so the alignment can be re-run with other settings
+      window.__af = { v, frames, valid, vtime, lines };
+      const r = applyAlign({});
+      if (!r) { msg('<span class="bad">I could not place the lines in that recording.</span> Check the start time and try again, or mark by hand.'); return; }
       msg(`<span class="ok"><b>Done: ${lines.length} lines marked.</b></span> ${r.pauses} of them start at a clear pause. Now press <b>Check this video</b>, listen to each line and tap “Wrong cut” on any that is off.`);
     } catch (e) {
       msg('<span class="bad">' + esc(e.message || String(e)) + '</span>');
       try { stream.getTracks().forEach(t => t.stop()); } catch (er) {}
     } finally { autoRunning = false; $('#auto').disabled = false; $('#autobar').classList.add('hidden'); }
   }
+
+  function applyAlign(opts) {
+    const A = window.__af; if (!A) return null;
+    const { v, frames, valid, vtime, lines } = A, n = frames.length;
+    const r = window.ChantEngine.alignLines(frames, lines, Object.assign({ valid }, opts));
+    if (!r.ok) return null;
+    lines.forEach((l, i) => {
+      const s = vtime[Math.min(n - 1, r.starts[i])], e = vtime[Math.min(n - 1, r.ends[i] - 1)];
+      st.lines[l.label] = { v, s: Math.max(0, +(s - 0.4).toFixed(2)), e: +(Math.max(s + 0.5, e + 0.2)).toFixed(2), endSet: true, auto: true, pause: !!r.atPause[i] };
+    });
+    st.flags = st.flags.filter(k => !lines.some(l => l.label === k));
+    save(); render();
+    return r;
+  }
+  window.__realign = applyAlign; // for tuning from the console
 
   function doExport() {
     const txt = JSON.stringify(exportObj());

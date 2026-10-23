@@ -217,14 +217,15 @@ details[open] > summary .chev{transform:rotate(90deg)}
 
   // drop silent runs (>= 0.25 s) inside [a,b): pauses between lines or words are not syllables.
   // Returns compressed features with idx (compressed -> original frame) and gap (frames removed after each frame).
-  function compress(F, a, b) {
-    const sil = t => !F.voiced[t] && F.E[t] < F.actGate + 4;
+  function compress(F, a, b, opt) {
+    const minGap = (opt && opt.minGap) || 25, quiet = opt && opt.quiet;
+    const sil = t => (!F.voiced[t] && F.E[t] < F.actGate + 4) || (quiet && quiet[t]);
     const keep = [], gap = [];
     let t = a;
     while (t < b) {
       if (sil(t)) {
         let u = t; while (u < b && sil(u)) u++;
-        if (u - t >= 25) { // remove, keeping 2 frames each side
+        if (u - t >= minGap) { // remove, keeping 2 frames each side
           for (let j = t; j < Math.min(t + 2, u); j++) { keep.push(j); gap.push(0); }
           if (gap.length) gap[gap.length - 1] = (u - 2) - (t + 2);
           for (let j = Math.max(t + 2, u - 2); j < u; j++) { keep.push(j); gap.push(0); }
@@ -570,9 +571,23 @@ details[open] > summary .chev{transform:rotate(90deg)}
     opt = opt || {};
     if (opt.valid) frames = frames.map((f, i) => opt.valid[i] ? f : { rms: 0, f0: 0, ap: 1 });
     const F = features(frames);
-    const Fc = compress(F, F.start, F.end);
+    // pauses in a produced recording are rarely silent (reverb, a drone): also count frames well below the local level
+    let quiet = null;
+    const rel = opt.relDip === undefined ? 12 : opt.relDip;
+    if (rel > 0) {
+      quiet = new Uint8Array(F.n);
+      const W = 150, step = 5;
+      for (let t = F.start; t < F.end; t++) {
+        if (t % 25 === 0 || !quiet.loc) {
+          const s = []; for (let j = Math.max(F.start, t - W); j < Math.min(F.end, t + W); j += step) s.push(F.E[j]);
+          quiet.loc = pct(s, 0.7);
+        }
+        if (F.E[t] < quiet.loc - rel) quiet[t] = 1;
+      }
+    }
+    const Fc = compress(F, F.start, F.end, { minGap: opt.minGap || 15, quiet });
     const lw = lines.map(l => l.syl.reduce((s, x) => s + x.wt, 0));
-    const B = segmentLines(Fc, lw);
+    const B = segmentLines(Fc, lw, { lambda: opt.lambda, gapBonus: opt.gapBonus });
     if (!B) return { ok: false };
     const N = lines.length;
     // refine boundaries that do not fall at a pause: syllable-level DP over the two neighbouring lines
