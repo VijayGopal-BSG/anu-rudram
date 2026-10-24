@@ -92,7 +92,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
 <div class="card" id="prog"></div>
 <div class="card" id="line"></div>
 <div class="row"><button class="big" id="play" style="flex:1">▶ Play the line (R)</button><button class="big" id="ctx" style="flex:1">▶ Around the start</button><button class="big" id="now" style="flex:1">⏺ Starts now (Space)</button><button class="big primary" id="ok" style="flex:1">✓ Correct (Enter)</button></div>
-<div class="row" style="margin-top:8px"><button id="skip">Not in video</button><button id="prev">‹ Previous line</button></div>
+<div class="row" style="margin-top:8px"><button id="prev">‹ Previous line</button><button id="fwd">Next line ›</button><button id="resetline">Reset this line</button><button id="skip">Not in video</button></div>
 <p class="small muted">Keys: Space = starts now · Enter = correct · ←/→ = ¼ s · Shift+←/→ = 1 s · R = replay · Backspace = previous line.</p>
 <p class="small" id="msg"></p>
 <div class="player" style="max-width:520px;margin-top:6px"><div id="yt"></div></div>
@@ -918,7 +918,11 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     const ls = L(), l = ls[idx], o = g.lines[l.label] || {};
     const done = ls.filter(x => g.lines[x.label] && (g.lines[x.label].ok || g.lines[x.label].skip)).length;
     $('#vt').innerHTML = ['namakam', 'chamakam'].map(k => `<button class="chip ${g.video === k ? 'on' : ''}" data-v="${k}">${k === 'namakam' ? 'Namakam video' : 'Chamakam video'}</button>`).join('');
-    $('#prog').innerHTML = `Line <b>${idx + 1}</b> of ${ls.length} · ${done} confirmed <div class="bar" style="margin-top:6px"><i style="width:${(done / ls.length * 100).toFixed(1)}%"></i></div>`;
+    const opt = (x, i) => { const r = g.lines[x.label] || {}; const st2 = r.skip ? 'not in video' : r.ok ? '✓ ' + fmt(r.s) : r.s != null ? 'moved ' + fmt(r.s) : ''; return `<option value="${i}" ${i === idx ? 'selected' : ''}>${esc(x.label)} — ${esc(x.words.slice(0, 2).join(' '))} ${st2 ? '· ' + st2 : ''}</option>`; };
+    $('#prog').innerHTML = `<div class="spread"><span>Line <b>${idx + 1}</b> of ${ls.length} · ${done} confirmed</span>
+      <span class="row small">Go to line <select id="jump">${ls.map(opt).join('')}</select></span></div>
+      <div class="bar" style="margin-top:6px"><i style="width:${(done / ls.length * 100).toFixed(1)}%"></i></div>`;
+    $('#jump').onchange = e => { stop(); idx = +e.target.value; g.cur[g.video] = idx; save(); render(); setTimeout(playAround, 150); };
     const s = proposal(idx);
     $('#line').innerHTML = `<div class="spread"><span class="label">${esc(l.label)}</span><span class="small ${o.ok ? 'ok' : 'muted'}">${o.skip ? 'not in video' : o.ok ? '✓ confirmed' : 'proposed'} start ${fmt(s)}</span></div>
       <p style="margin:8px 0 2px">Listen for: <b style="font-size:24px">${esc(l.words.slice(0, 3).join(' '))} …</b></p>
@@ -961,6 +965,8 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
   function correct() { confirmAt(proposal(idx)); }
   function nudge(d) { const l = L()[idx], o = rec(l.label); o.v = g.video; o.s = +Math.max(0, proposal(idx) + d).toFixed(2); o.ok = false; save(); render(); stop(); setTimeout(playAround, 150); }
   function skip() { const l = L()[idx], o = rec(l.label); o.v = g.video; o.skip = true; o.ok = false; delete o.s; save(); next(); }
+  function fwd() { stop(); if (idx < L().length - 1) { idx++; g.cur[g.video] = idx; save(); render(); setTimeout(playAround, 150); } }
+  function resetLine() { const l = L()[idx]; delete g.lines[l.label]; save(); stop(); render(); setTimeout(playAround, 150); }
   function prev() { stop(); if (idx > 0) { idx--; g.cur[g.video] = idx; save(); render(); setTimeout(playAround, 150); } }
 
   function exportObj() {
@@ -987,7 +993,8 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
   }
 
   document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+    if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.target.tagName === 'BUTTON') e.target.blur();
     if (e.code === 'Space') { e.preventDefault(); startsNow(); }
     else if (e.key === 'Enter') { e.preventDefault(); correct(); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(e.shiftKey ? -1 : -0.25); }
@@ -995,6 +1002,9 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); stop(); setTimeout(playAround, 100); }
     else if (e.key === 'Backspace') { e.preventDefault(); prev(); }
   });
+  // after a mouse click, take focus off the button so Space/Enter go to the shortcuts, not to that button again
+  document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button'); if (b) b.blur(); }, true);
+  document.addEventListener('keyup', e => { if (e.code === 'Space' && e.target.tagName === 'BUTTON') e.preventDefault(); });
   window.addEventListener('blur', () => setTimeout(() => { const a = document.activeElement; if (a && a.tagName === 'IFRAME') { a.blur(); window.focus(); } }, 150));
   window.addEventListener('DOMContentLoaded', () => {
     ytp = new S.LinePlayer('yt', (k, v) => { if (k === 'error') $('#msg').innerHTML = '<span class="bad">YouTube error ' + v + '.</span>'; });
@@ -1003,7 +1013,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     $('#play').onclick = () => { stop(); setTimeout(playAround, 100); };
     $('#ctx').onclick = () => { stop(); setTimeout(playContext, 100); };
     $('#now').onclick = startsNow; $('#ok').onclick = correct;
-    $('#skip').onclick = skip; $('#prev').onclick = prev; $('#exp').onclick = doExport;
+    $('#skip').onclick = skip; $('#prev').onclick = prev; $('#resetline').onclick = resetLine; $('#fwd').onclick = fwd; $('#exp').onclick = doExport;
     $('#reset').onclick = () => { if (confirm('Clear all confirmed times for the ' + g.video + ' video?')) { L().forEach(l => delete g.lines[l.label]); g.cur[g.video] = 0; idx = 0; save(); render(); } };
     render();
   });
