@@ -472,7 +472,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (refPace) {
       if (pace < refPace * 0.7) { timing -= 40; tim.notes.push('rushed'); }
       else if (pace > refPace * 3.5) { timing -= 20; tim.notes.push('slow'); }
-    } else if (pace < 0.11) { timing -= 40; tim.notes.push('rushed'); }
+    } else if (pace < 0.17) { timing -= 40; tim.notes.push('rushed'); } // K. Suresh chants about 0.25 s per matra
     // long vs short
     const ls = [], ss = [];
     for (let k = 0; k < N; k++) { const L = (bounds[k + 1] - bounds[k]) * FRAME_S; if (syl[k].wt >= 2) ls.push(L); else if (!syl[k].gum) ss.push(L); }
@@ -681,6 +681,27 @@ details[open] > summary .chev{transform:rotate(90deg)}
     refPace(line) { const t = this.get(line.label); if (!t) return null; const m = line.syl.reduce((a, s) => a + s.wt, 0); const d = t.e - t.s; return Math.max(d * 0.6, d - 0.8) / m; }
   };
 
+  // ---------------- estimated position of a line in his videos ----------------
+  // Line-by-line times could not be found reliably for this recording, so a line's place is estimated from its
+  // length: the chanting runs from WINDOWS[v][0] to WINDOWS[v][1] (seconds; from the videos' YouTube chapters).
+  const WINDOWS = { namakam: [210, 1323], chamakam: [543, 1162] };
+  const Estimate = {
+    _t: null,
+    build() {
+      const t = {};
+      for (const v of ['namakam', 'chamakam']) {
+        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+        const m = ls.map(l => l.syl.reduce((a, s) => a + s.wt, 0)), tot = m.reduce((a, b) => a + b, 0);
+        const [a, b] = WINDOWS[v]; let acc = 0;
+        ls.forEach((l, i) => { t[l.label] = { v, s: a + (b - a) * acc / tot }; acc += m[i]; });
+      }
+      this._t = t; return t;
+    },
+    at(label) { return (this._t || this.build())[label] || null; },
+    // the start of the anuvaka (section) a line belongs to
+    sectionStart(label) { const l = Course.flat().byLabel[label]; const s = Course.flat().sectionById[l.section]; return this.at(s.groups[0].lines[0].label); }
+  };
+
   // ---------------- YouTube line player ----------------
   let apiPromise = null;
   function loadYT() {
@@ -722,6 +743,16 @@ details[open] > summary .chev{transform:rotate(90deg)}
       }
     }
     rates() { try { return this.player.getAvailablePlaybackRates(); } catch (e) { return []; } }
+    isPlaying() { try { return this.player && this.player.getPlayerState() === 1; } catch (e) { return false; } }
+    async playFrom(videoKey, s, rate) { // play on from a point; the learner stops it (or Record does)
+      this.token++;
+      await this.ensure(videoKey);
+      const p = this.player; this.rate = rate || 1;
+      p.seekTo(Math.max(0, s), true); p.playVideo();
+      try { p.setPlaybackRate(this.rate); } catch (e) {}
+      for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 100)); if (p.getPlayerState() === 1) return true; }
+      return 'blocked';
+    }
     stop() { this.token++; try { this.player && this.player.pauseVideo(); } catch (e) {} }
     // play [s,e] at rate; resolves true when finished, false if stopped/failed, 'blocked' if the phone would not start it
     async play(videoKey, s, e, rate) {
@@ -846,7 +877,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
   }
   function esc(t) { return String(t).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
 
-  window.Shared = { Course, Timings, LinePlayer, Recorder, staff, esc, VIDEOS };
+  window.Shared = { Course, Timings, Estimate, LinePlayer, Recorder, staff, esc, VIDEOS };
 })();
 
 </script><script>

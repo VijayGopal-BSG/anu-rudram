@@ -450,7 +450,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (refPace) {
       if (pace < refPace * 0.7) { timing -= 40; tim.notes.push('rushed'); }
       else if (pace > refPace * 3.5) { timing -= 20; tim.notes.push('slow'); }
-    } else if (pace < 0.11) { timing -= 40; tim.notes.push('rushed'); }
+    } else if (pace < 0.17) { timing -= 40; tim.notes.push('rushed'); } // K. Suresh chants about 0.25 s per matra
     // long vs short
     const ls = [], ss = [];
     for (let k = 0; k < N; k++) { const L = (bounds[k + 1] - bounds[k]) * FRAME_S; if (syl[k].wt >= 2) ls.push(L); else if (!syl[k].gum) ss.push(L); }
@@ -659,6 +659,27 @@ details[open] > summary .chev{transform:rotate(90deg)}
     refPace(line) { const t = this.get(line.label); if (!t) return null; const m = line.syl.reduce((a, s) => a + s.wt, 0); const d = t.e - t.s; return Math.max(d * 0.6, d - 0.8) / m; }
   };
 
+  // ---------------- estimated position of a line in his videos ----------------
+  // Line-by-line times could not be found reliably for this recording, so a line's place is estimated from its
+  // length: the chanting runs from WINDOWS[v][0] to WINDOWS[v][1] (seconds; from the videos' YouTube chapters).
+  const WINDOWS = { namakam: [210, 1323], chamakam: [543, 1162] };
+  const Estimate = {
+    _t: null,
+    build() {
+      const t = {};
+      for (const v of ['namakam', 'chamakam']) {
+        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+        const m = ls.map(l => l.syl.reduce((a, s) => a + s.wt, 0)), tot = m.reduce((a, b) => a + b, 0);
+        const [a, b] = WINDOWS[v]; let acc = 0;
+        ls.forEach((l, i) => { t[l.label] = { v, s: a + (b - a) * acc / tot }; acc += m[i]; });
+      }
+      this._t = t; return t;
+    },
+    at(label) { return (this._t || this.build())[label] || null; },
+    // the start of the anuvaka (section) a line belongs to
+    sectionStart(label) { const l = Course.flat().byLabel[label]; const s = Course.flat().sectionById[l.section]; return this.at(s.groups[0].lines[0].label); }
+  };
+
   // ---------------- YouTube line player ----------------
   let apiPromise = null;
   function loadYT() {
@@ -700,6 +721,16 @@ details[open] > summary .chev{transform:rotate(90deg)}
       }
     }
     rates() { try { return this.player.getAvailablePlaybackRates(); } catch (e) { return []; } }
+    isPlaying() { try { return this.player && this.player.getPlayerState() === 1; } catch (e) { return false; } }
+    async playFrom(videoKey, s, rate) { // play on from a point; the learner stops it (or Record does)
+      this.token++;
+      await this.ensure(videoKey);
+      const p = this.player; this.rate = rate || 1;
+      p.seekTo(Math.max(0, s), true); p.playVideo();
+      try { p.setPlaybackRate(this.rate); } catch (e) {}
+      for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 100)); if (p.getPlayerState() === 1) return true; }
+      return 'blocked';
+    }
     stop() { this.token++; try { this.player && this.player.pauseVideo(); } catch (e) {} }
     // play [s,e] at rate; resolves true when finished, false if stopped/failed, 'blocked' if the phone would not start it
     async play(videoKey, s, e, rate) {
@@ -824,7 +855,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
   }
   function esc(t) { return String(t).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])); }
 
-  window.Shared = { Course, Timings, LinePlayer, Recorder, staff, esc, VIDEOS };
+  window.Shared = { Course, Timings, Estimate, LinePlayer, Recorder, staff, esc, VIDEOS };
 })();
 
 </script><script>
@@ -898,30 +929,41 @@ details[open] > summary .chev{transform:rotate(90deg)}
     return '<div class="row" role="group" aria-label="Speed">' + [1, 0.75, 0.5].map(r => `<button class="chip ${st.settings.speed === r ? 'on' : ''}" data-speed="${r}">${r === 1 ? 'Normal' : r + '×'}</button>`).join('') + '</div>';
   }
   function bindSpeed() { app.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => { st.settings.speed = +b.dataset.speed; save(); app.querySelectorAll('[data-speed]').forEach(x => x.classList.toggle('on', +x.dataset.speed === st.settings.speed)); }); }
-  async function listen(labels, times, btn) {
+  // Listen: K. Suresh's video from a little before the estimated place of this line (or the start of its anuvāka)
+  const canListen = labels => !!Timings.runs(labels) || labels.every(l => S.Estimate.at(l));
+  async function listen(labels, mode, btn) {
+    if (recording || !canListen(labels)) return;
+    if (player.isPlaying()) { player.stop(); btn.textContent = btn.dataset.label; return; }
     const runs = Timings.runs(labels);
-    if (!runs || recording) return;
-    btn.disabled = true; btn.textContent = '♪ Playing…';
-    try {
-      outer: for (let i = 0; i < times; i++) {
-        for (const r of runs) {
+    if (runs) { // exact line times are known: play just these lines (a line twice by default)
+      btn.textContent = '■ Stop';
+      const times = mode === 'line' && labels.length === 1 ? st.settings.listens : 1;
+      try {
+        outer: for (let i = 0; i < times; i++) for (const r of runs) {
           const res = await player.play(r.v, r.s, r.e, st.settings.speed);
           if (res === 'blocked') { ytMsg('<b>Tap ▶ on the video once</b> (the phone needs that the first time), then use Listen again.'); break outer; }
           if (!res) break outer;
-          await new Promise(z => setTimeout(z, 400));
+          await new Promise(z => setTimeout(z, 500));
         }
-        await new Promise(z => setTimeout(z, 300));
-      }
-    } catch (e) { ytMsg('<span class="bad">' + esc(e.message) + '</span>'); }
-    btn.disabled = false; btn.textContent = btn.dataset.label || '▶ Listen';
+      } catch (e) { ytMsg('<span class="bad">' + esc(e.message) + '</span>'); }
+      btn.textContent = btn.dataset.label; return;
+    }
+    const est = mode === 'section' ? S.Estimate.sectionStart(labels[0]) : S.Estimate.at(labels[0]);
+    btn.textContent = '■ Pause';
+    try {
+      const res = await player.playFrom(est.v, est.s - (mode === 'section' ? 5 : 12), st.settings.speed);
+      if (res === 'blocked') { ytMsg('<b>Tap ▶ on the video once</b> (the phone needs that the first time), then use Listen again.'); btn.textContent = btn.dataset.label; }
+    } catch (e) { ytMsg('<span class="bad">' + esc(e.message) + '</span>'); btn.textContent = btn.dataset.label; }
   }
-  function listenNote(labels) {
-    if (!Object.keys(Timings.data.lines).length) return '<p class="note small">Listening is not set up yet: Vijay still has to mark where each line starts in the recording. You can practise from the marks meanwhile.</p>';
-    if (!Timings.runs(labels)) return '<p class="note small">Part of this isn’t in K. Suresh’s recording. Practise from the marks; ask Vijay if you are unsure.</p>';
-    return '';
+  function listenNote(labels, mode) {
+    if (Timings.runs(labels)) return '';
+    if (!canListen(labels)) return '<p class="note small">This part isn’t in K. Suresh’s recording. Practise from the marks; ask Vijay if you are unsure.</p>';
+    return mode === 'section'
+      ? '<p class="small muted">Listen plays from the start of this anuvāka (the place is estimated: rewind or skip a few seconds if needed).</p>'
+      : '<p class="small muted">Listen plays from a little before this line. The place is estimated, so let it run until you hear the line, and rewind on the video if you need it again.</p>';
   }
   function listenButton(labels, text) {
-    return `<button class="big" id="listen" data-label="${text}" ${Timings.runs(labels) ? '' : 'disabled'}>${text}</button>`;
+    return `<button class="big" id="listen" data-label="${text}" ${canListen(labels) ? '' : 'disabled'}>${text}</button>`;
   }
   const REASONS = {
     short: 'That was too short for what is on screen. Chant all of it, then tap Done.',
@@ -957,12 +999,12 @@ details[open] > summary .chev{transform:rotate(90deg)}
         try { wake && wake.release(); } catch (e) {}
         if (my !== takeToken) return;
         panel.classList.add('hidden'); btn.classList.remove('hidden'); btn.disabled = false;
-        const lb2 = $('#listen'); if (lb2) lb2.disabled = !Timings.runs(lines.map(l => l.label));
+        const lb2 = $('#listen'); if (lb2) { lb2.disabled = !canListen(lines.map(l => l.label)); lb2.textContent = lb2.dataset.label; }
         msg.textContent = multi ? 'Listening to your chant… (a long take can need a few seconds)' : 'Listening to your chant…';
         setTimeout(() => {
           if (my !== takeToken) return;
           let res;
-          try { res = E.analyze(frames, lines, { target: target(), refPaces: lines.map(l => Timings.refPace(l)) }); }
+          try { res = E.analyze(frames, lines, { target: target() }); }
           catch (e) { res = { ok: false, reason: 'segment', error: String(e) }; }
           msg.textContent = '';
           if (my === takeToken) onResult(res);
@@ -979,7 +1021,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
         });
       } catch (e) {
         recording = false; btn.disabled = false;
-        const lb3 = $('#listen'); if (lb3) lb3.disabled = !Timings.runs(lines.map(l => l.label));
+        const lb3 = $('#listen'); if (lb3) lb3.disabled = !canListen(lines.map(l => l.label));
         msg.innerHTML = '<span class="bad">' + esc(e.name === 'NotAllowedError' ? 'Microphone permission was refused. In Settings → Safari → Microphone, allow this site, then reload.' : (e.message || String(e))) + '</span>';
         return;
       }
@@ -1071,14 +1113,14 @@ details[open] > summary .chev{transform:rotate(90deg)}
         <div class="card"><div class="spread"><span class="label">${esc(line.label)}</span>${dots(s.a)}</div>
           <div class="deva">${esc(line.deva)}</div><div class="iast">${esc(line.iast)}</div>
           <details class="small" style="margin-top:6px"><summary class="muted"><span class="chev">›</span> Meaning and key words</summary><p>${esc(g.meaning)}</p><p class="muted">${g.keywords.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p>${g.notes.map(n => '<p class="note">' + esc(n) + '</p>').join('')}</details></div>
-        ${listenNote([line.label])}
+        ${listenNote([line.label], 'line')}
         <div class="row">${speedChips()}</div>
         <div class="row" style="margin:10px 0">${listenButton([line.label], '▶ Listen')}</div>
-        <p class="small muted">Listen ${st.settings.listens === 1 ? 'once' : st.settings.listens + ' times'}, then chant the line back.</p>
+        <p class="small muted">Listen to the line (pause the video when it’s done), then chant it back.</p>
         <div id="rec"></div><div id="res"></div>
         <div class="navbar row" id="nav"></div>`;
       bindSpeed();
-      const lb = $('#listen'); lb.onclick = () => listen([line.label], st.settings.listens, lb);
+      const lb = $('#listen'); lb.onclick = () => listen([line.label], 'line', lb);
       const nav = () => {
         const passed = linePassed(line);
         $('#nav').innerHTML = (passed ? `<button class="primary big" id="next">Next ›</button>` : '') +
@@ -1109,11 +1151,11 @@ details[open] > summary .chev{transform:rotate(90deg)}
       showPlayer(true);
       app.innerHTML = `<div class="card"><b>Now the whole mantra</b><p class="small muted">Chant all ${lines.length} lines in one go.</p>
         ${lines.map(l => `<div><span class="label">${esc(l.label)}</span><div class="deva sm">${esc(l.deva)}</div></div>`).join('')}</div>
-        ${listenNote(labels)}<div class="row">${speedChips()}</div>
+        ${listenNote(labels, 'line')}<div class="row">${speedChips()}</div>
         <div class="row" style="margin:10px 0">${listenButton(labels, '▶ Listen')}</div>
         <div id="rec"></div><div id="res"></div><div class="navbar row" id="nav"></div>`;
       bindSpeed();
-      const lb = $('#listen'); lb.onclick = () => listen(labels, 1, lb);
+      const lb = $('#listen'); lb.onclick = () => listen(labels, 'line', lb);
       recorderUI($('#rec'), lines, res => {
         const box = $('#res');
         if (!res.ok) { box.innerHTML = '<p class="note">' + esc(REASONS[res.reason] || REASONS.segment) + '</p>'; return; }
@@ -1144,12 +1186,12 @@ details[open] > summary .chev{transform:rotate(90deg)}
     setHead(opts.kicker, opts.title, `<p class="muted">${esc(opts.intro)}</p>`);
     showPlayer(true);
     app.innerHTML = `<div class="card" style="max-height:46vh;overflow:auto">${lines.map(l => `<div><span class="label">${esc(l.label)}</span>${isEar(l.label) ? ' <span class="small muted">by ear</span>' : ''}<div class="deva sm">${esc(l.deva)}</div></div>`).join('')}</div>
-      ${listenNote(labels)}<div class="row">${speedChips()}</div>
-      <div class="row" style="margin:10px 0">${listenButton(labels, '▶ Listen to all')}</div>
+      ${listenNote(labels, 'section')}<div class="row">${speedChips()}</div>
+      <div class="row" style="margin:10px 0">${listenButton(labels, '▶ Listen')}</div>
       <div id="rec"></div><div id="res"></div><div class="navbar row" id="nav">${opts.optional ? '<button class="big" id="skipto">Skip for today</button>' : ''}</div>`;
     bindSpeed();
     const sk = $('#skipto'); if (sk) sk.onclick = () => { opts.onDone(false, null); };
-    const lb = $('#listen'); lb.onclick = () => listen(labels, 1, lb);
+    const lb = $('#listen'); lb.onclick = () => listen(labels, 'section', lb);
     recorderUI($('#rec'), lines, res => {
       const box = $('#res');
       if (!res.ok) { box.innerHTML = '<p class="note">' + esc(REASONS[res.reason] || REASONS.segment) + '</p>'; return; }
