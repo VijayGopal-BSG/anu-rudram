@@ -918,7 +918,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     const ls = L(), l = ls[idx], o = g.lines[l.label] || {};
     const done = ls.filter(x => g.lines[x.label] && (g.lines[x.label].ok || g.lines[x.label].skip)).length;
     $('#vt').innerHTML = ['namakam', 'chamakam'].map(k => `<button class="chip ${g.video === k ? 'on' : ''}" data-v="${k}">${k === 'namakam' ? 'Namakam video' : 'Chamakam video'}</button>`).join('');
-    const opt = (x, i) => { const r = g.lines[x.label] || {}; const st2 = r.skip ? 'not in video' : r.ok ? '✓ ' + fmt(r.s) : r.s != null ? 'moved ' + fmt(r.s) : ''; return `<option value="${i}" ${i === idx ? 'selected' : ''}>${esc(x.label)} — ${esc(x.words.slice(0, 2).join(' '))} ${st2 ? '· ' + st2 : ''}</option>`; };
+    const opt = (x, i) => { const r = g.lines[x.label] || {}; const st2 = r.skip ? 'not in video' : r.ok ? '✓ ' + fmt(r.s) : r.s != null ? 'moved ' + fmt(r.s) : 'proposed ' + fmt(proposal(i)); return `<option value="${i}" ${i === idx ? 'selected' : ''}>${esc(x.label)} — ${esc(x.words.slice(0, 2).join(' '))} ${st2 ? '· ' + st2 : ''}</option>`; };
     $('#prog').innerHTML = `<div class="spread"><span>Line <b>${idx + 1}</b> of ${ls.length} · ${done} confirmed</span>
       <span class="row small">Go to line <select id="jump">${ls.map(opt).join('')}</select></span></div>
       <div class="bar" style="margin-top:6px"><i style="width:${(done / ls.length * 100).toFixed(1)}%"></i></div>`;
