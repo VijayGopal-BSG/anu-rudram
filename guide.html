@@ -681,7 +681,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     build() {
       const t = {};
       for (const v of ['namakam', 'chamakam']) {
-        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v);
         const m = ls.map(l => l.syl.reduce((a, s) => a + s.wt, 0)), tot = m.reduce((a, b) => a + b, 0);
         const [a, b] = WINDOWS[v]; let acc = 0;
         ls.forEach((l, i) => { t[l.label] = { v, s: a + (b - a) * acc / tot }; acc += m[i]; });
@@ -882,7 +882,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
   let g; try { g = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
   g = g || { video: 'namakam', lines: {}, cur: {} };
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(g)); } catch (e) {} };
-  const linesOf = v => C.lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+  const linesOf = v => C.lines.filter(l => Course.videoFor(l.label) === v); // Namakam video opens with the Gaṇapati prayer (G1–G3)
   const mat = l => l.syl.reduce((a, s) => a + s.wt, 0);
   const fmt = t => { if (t == null || isNaN(t)) return '—'; const m = Math.floor(t / 60), s = t - m * 60; return m + ':' + s.toFixed(1).padStart(4, '0'); };
   let ytp = null, idx = 0, playing = false;
@@ -992,7 +992,6 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
         out.lines[l.label] = { v, s: o.s, e: +Math.max(o.s + 0.5, e).toFixed(2) };
       });
     }
-    ['G1', 'G2', 'G3'].forEach(k => { out.lines[k] = { v: 'namakam', skip: true }; });
     return out;
   }
   function doExport() {

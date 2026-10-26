@@ -679,7 +679,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     build() {
       const t = {};
       for (const v of ['namakam', 'chamakam']) {
-        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v);
         const m = ls.map(l => l.syl.reduce((a, s) => a + s.wt, 0)), tot = m.reduce((a, b) => a + b, 0);
         const [a, b] = WINDOWS[v]; let acc = 0;
         ls.forEach((l, i) => { t[l.label] = { v, s: a + (b - a) * acc / tot }; acc += m[i]; });

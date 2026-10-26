@@ -690,7 +690,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     build() {
       const t = {};
       for (const v of ['namakam', 'chamakam']) {
-        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v && !/^G/.test(l.label));
+        const ls = Course.flat().lines.filter(l => Course.videoFor(l.label) === v);
         const m = ls.map(l => l.syl.reduce((a, s) => a + s.wt, 0)), tot = m.reduce((a, b) => a + b, 0);
         const [a, b] = WINDOWS[v]; let acc = 0;
         ls.forEach((l, i) => { t[l.label] = { v, s: a + (b - a) * acc / tot }; acc += m[i]; });
@@ -895,7 +895,6 @@ details[open] > summary .chev{transform:rotate(90deg)}
   st.cstart = st.cstart || {};
   const chantStart = v => st.cstart[v] != null ? st.cstart[v] : CHANT_START[v];
   // the Gaṇapati prayer is not in the Namakam video
-  ['G1', 'G2', 'G3'].forEach(k => { if (!st.lines[k]) st.lines[k] = { v: 'namakam', skip: true }; });
   const fmtMS = s => Math.floor(s / 60) + ':' + String(Math.round(s % 60)).padStart(2, '0');
   const parseMS = x => { const m = String(x).trim().match(/^(\d+):(\d{1,2})$/); return m ? +m[1] * 60 + +m[2] : (isFinite(+x) ? +x : null); };
   let player = null, ytp = null, cur = null, checking = false; // cur: label to mark next (or the line playing during Check)
@@ -964,7 +963,6 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (autoRunning) return;
     const v = st.video, msg = h => { $('#automsg').innerHTML = h; };
     const cs = parseMS($('#cstart').value); if (cs != null) { st.cstart[v] = cs; save(); }
-    if (v === 'namakam') ['G1', 'G2', 'G3'].forEach(k => { st.lines[k] = { v: 'namakam', skip: true }; }); // never in this video
     const lines = (window.__autoLines || linesOf(v)).filter(l => !(st.lines[l.label] && st.lines[l.label].skip));
     let stream;
     try {
