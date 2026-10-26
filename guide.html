@@ -85,15 +85,15 @@ summary{list-style:none} summary::-webkit-details-marker{display:none}
 .chev{display:inline-block;transition:transform .15s;color:var(--accent);font-weight:700;width:1em}
 details[open] > summary .chev{transform:rotate(90deg)}
 </style></head><body><main class="wrap"><h1>Guided line marking</h1>
-<p class="small muted">The page proposes where each line starts and plays the whole line. Listen for the words in the box.
+<p class="small muted">The page proposes where each line starts and plays on from there until you press Stop. Listen for the words in the box.
 If it is right, press <b>Correct</b> (Enter). If not, move the start with the <b>− / +</b> buttons (5, 2, 1 or ¼ s; it replays the line each time), or press <b>Starts now</b> (Space) as you hear the first words.
 After you confirm, it moves to the next line and plays it. Its guesses improve as it learns his pace. Your work is saved in this browser.</p>
 <div class="row" id="vt"></div>
 <div class="card" id="prog"></div>
 <div class="card" id="line"></div>
-<div class="row"><button class="big" id="play" style="flex:1">▶ Play the line (R)</button><button class="big" id="ctx" style="flex:1">▶ Around the start</button><button class="big" id="now" style="flex:1">⏺ Starts now (Space)</button><button class="big primary" id="ok" style="flex:1">✓ Correct (Enter)</button></div>
+<div class="row"><button class="big" id="play" style="flex:1">▶ Play from the start (R)</button><button class="big" id="ctx" style="flex:1">▶ Around the start</button><button class="big" id="now" style="flex:1">⏺ Starts now (Space)</button><button class="big primary" id="ok" style="flex:1">✓ Correct (Enter)</button></div>
 <div class="row" style="margin-top:8px"><button id="prev">‹ Previous line</button><button id="fwd">Next line ›</button><button id="resetline">Reset this line</button><button id="skip">Not in video</button></div>
-<p class="small muted">Keys: Space = starts now · Enter = correct · ←/→ = ¼ s · Shift+←/→ = 1 s · R = replay · Backspace = previous line.</p>
+<p class="small muted">The video keeps playing until you press Stop (S), so you can listen as long as you need. Keys: Space = starts now · Enter = correct · ←/→ = ¼ s · Shift+←/→ = 1 s · R = play from the start · S = stop · Backspace = previous line.</p>
 <p class="small" id="msg"></p>
 <div class="player" style="max-width:520px;margin-top:6px"><div id="yt"></div></div>
 <h2>When both videos are done</h2><div class="row"><button class="primary" id="exp">Export</button><button id="reset">Clear this video</button></div>
@@ -928,6 +928,8 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
       <p style="margin:8px 0 2px">Listen for: <b style="font-size:24px">${esc(l.words.slice(0, 3).join(' '))} …</b></p>
       <div class="deva sm">${esc(l.deva)}</div>
       ${idx > 0 ? `<p class="small muted" style="margin-top:6px">Before it: ${esc(ls[idx - 1].words.slice(-3).join(' '))} (end of ${esc(ls[idx - 1].label)})</p>` : ''}
+      ${idx < ls.length - 1 ? `<p class="small muted">After it: ${esc(ls[idx + 1].label)} ${esc(ls[idx + 1].words.slice(0, 4).join(' '))} …</p>` : ''}
+      <p class="small">Video now at: <b id="now_t">—</b></p>
       <div style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">Move the start (it plays the line again from the new start each time):</div>
       <div class="row">${[-5, -2, -1, -0.25].map(d => `<button class="chip" data-d="${d}">${d === -0.25 ? '−¼' : '−' + Math.abs(d)} s</button>`).join('')}
         <b style="font-size:20px;min-width:90px;text-align:center">${fmt(s)}</b>
@@ -936,17 +938,24 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { if (g.video === b.dataset.v) return; stop(); g.cur[g.video] = idx; g.video = b.dataset.v; save(); idx = g.cur[g.video] != null ? g.cur[g.video] : firstOpen(); ytp.ensure(g.video); render(); });
     $('#count').textContent = `${done} of ${ls.length} lines confirmed in this video.`;
   }
-  function stop() { playing = false; try { ytp.stop(); } catch (e) {} }
+  function stop() { playing = false; try { ytp.stop(); } catch (e) {} setPlayBtn(); }
   // end of the current line: where the next line would start at his pace
   function lineEnd(i) { const ls = L(); return proposal(i) + mat(ls[i]) * pace(i + 1) + 0.3; }
-  async function playSpan(a, b) {
-    playing = true;
-    const res = await ytp.play(g.video, Math.max(0, a), b, 1);
-    playing = false;
-    if (res === 'blocked') $('#msg').innerHTML = 'Click ▶ on the video once, then press Play again.';
+  // play on from a point and keep playing until Vijay stops it (lines often start alike, so he listens as long as he needs)
+  async function playFrom(a) {
+    playing = true; setPlayBtn();
+    const res = await ytp.playFrom(g.video, Math.max(0, a), 1);
+    if (res === 'blocked') { playing = false; setPlayBtn(); $('#msg').innerHTML = 'Click ▶ on the video once, then press Play again.'; }
   }
-  const playAround = () => playSpan(proposal(idx) - 0.3, lineEnd(idx));           // the whole line, start to end
-  const playContext = () => playSpan(proposal(idx) - 4, proposal(idx) + 3);         // a little before and after the start
+  const playAround = () => playFrom(proposal(idx) - 0.3);   // from the proposed start, on and on
+  const playContext = () => playFrom(proposal(idx) - 4);    // from a little before the start
+  function setPlayBtn() { const b = $('#play'); if (b) b.textContent = playing ? '■ Stop (S)' : '▶ Play from the start (R)'; }
+  setInterval(() => { // live position, and keep the button in step with the video
+    if (!ytp || !ytp.player || !ytp.player.getCurrentTime) return;
+    const now = ytp.player.getCurrentTime(), on = ytp.isPlaying();
+    if (on !== playing) { playing = on; setPlayBtn(); }
+    const el = $('#now_t'); if (el) el.textContent = fmt(now) + (on ? ' ▶' : '');
+  }, 200);
   function confirmAt(s) {
     const l = L()[idx], o = rec(l.label);
     o.v = g.video; o.s = +Math.max(0, s).toFixed(2); o.ok = true; delete o.skip;
@@ -1000,6 +1009,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     else if (e.key === 'ArrowLeft') { e.preventDefault(); nudge(e.shiftKey ? -1 : -0.25); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); nudge(e.shiftKey ? 1 : 0.25); }
     else if (e.key === 'r' || e.key === 'R') { e.preventDefault(); stop(); setTimeout(playAround, 100); }
+    else if (e.key === 's' || e.key === 'S') { e.preventDefault(); stop(); }
     else if (e.key === 'Backspace') { e.preventDefault(); prev(); }
   });
   // after a mouse click, take focus off the button so Space/Enter go to the shortcuts, not to that button again
@@ -1010,7 +1020,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     ytp = new S.LinePlayer('yt', (k, v) => { if (k === 'error') $('#msg').innerHTML = '<span class="bad">YouTube error ' + v + '.</span>'; });
     ytp.ensure(g.video).catch(e => { $('#msg').textContent = e.message; });
     idx = g.cur[g.video] != null ? g.cur[g.video] : firstOpen();
-    $('#play').onclick = () => { stop(); setTimeout(playAround, 100); };
+    $('#play').onclick = () => { if (playing) stop(); else playAround(); };
     $('#ctx').onclick = () => { stop(); setTimeout(playContext, 100); };
     $('#now').onclick = startsNow; $('#ok').onclick = correct;
     $('#skip').onclick = skip; $('#prev').onclick = prev; $('#resetline').onclick = resetLine; $('#fwd').onclick = fwd; $('#exp').onclick = doExport;
