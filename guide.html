@@ -889,28 +889,41 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
 
   const L = () => linesOf(g.video);
   const rec = label => (g.lines[label] = g.lines[label] || {});
-  function defaultPace(v) { const ls = linesOf(v), m = ls.reduce((a, l) => a + mat(l), 0); return (WINDOWS[v][1] - WINDOWS[v][0]) / m; }
-  // his pace from the lines confirmed so far (seconds per matra, including the breath before the next line)
-  function pace(i) {
+  // Timing model: each line takes its matras plus a breath (GAP), with a longer pause where a section changes (SECGAP), all in matra units.
+  const GAP = 4, SECGAP = 10;
+  const secOf = l => l.label.includes('.') ? l.label.split('.')[0] : l.label.replace(/\d+$/, '');
+  const skipped = l => { const r = g.lines[l.label]; return !!(r && r.skip); };
+  function w(ls, k) { if (skipped(ls[k])) return 0; const n = ls[k + 1]; return mat(ls[k]) + GAP + (n && secOf(n) !== secOf(ls[k]) ? SECGAP : 0); }
+  function defaultPace(v) { const ls = linesOf(v); let m = 0; for (let k = 0; k < ls.length; k++) m += w(ls, k); return (WINDOWS[v][1] - WINDOWS[v][0]) / m; }
+  const isAnchor = l => { const r = g.lines[l.label]; return !!(r && r.ok && !r.skip && r.s != null); };
+  // his local pace (seconds per weight unit) from the last confirmed pairs before line i, Ganapati prayer excluded (it is slower)
+  function localPace(i) {
     const ls = L(), r = [];
     for (let k = i - 1; k > 0 && r.length < 6; k--) {
+      if (/^G/.test(ls[k - 1].label)) break;
       const a = g.lines[ls[k - 1].label], b = g.lines[ls[k].label];
-      if (a && b && a.ok && b.ok && !a.skip && !b.skip && b.s > a.s) r.push((b.s - a.s) / mat(ls[k - 1]));
+      if (isAnchor(ls[k - 1]) && isAnchor(ls[k]) && b.s > a.s) r.push((b.s - a.s) / w(ls, k - 1));
     }
-    if (!r.length) return defaultPace(g.video);
+    if (r.length < 2) return null;
     r.sort((x, y) => x - y); return r[r.length >> 1];
   }
-  // proposed start of line i: its own adjusted time, else from the last confirmed line at the learned pace
+  const pace = i => localPace(i) || defaultPace(g.video);
+  // proposed start of line i: its own adjusted time; else spread the lines evenly (by length) between the
+  // confirmed line before it and the next confirmed line (or the end of the chanting), nudged by his recent pace
   function proposal(i) {
     const ls = L(), o = g.lines[ls[i].label];
     if (o && o.s != null) return o.s;
-    const isAnchor = l => { const r = g.lines[l.label]; return r && r.ok && !r.skip && r.s != null; };
     let j = i - 1; while (j >= 0 && !isAnchor(ls[j])) j--;
-    const p = pace(i);
-    let t, from;
-    if (j >= 0) { t = g.lines[ls[j].label].s; from = j; } else { t = WINDOWS[g.video][0]; from = 0; }
-    for (let k = from; k < i; k++) { const r = g.lines[ls[k].label]; if (r && r.skip) continue; t += mat(ls[k]) * p; }
-    return t;
+    let n = i + 1; while (n < ls.length && !isAnchor(ls[n])) n++;
+    const t0 = j >= 0 ? g.lines[ls[j].label].s : WINDOWS[g.video][0], from = Math.max(j, 0);
+    const t1 = n < ls.length ? g.lines[ls[n].label].s : WINDOWS[g.video][1];
+    let before = 0, all = 0;
+    for (let k = from; k < n; k++) { const x = w(ls, k); if (k < i) before += x; all += x; }
+    const tI = all > 0 ? t0 + (t1 - t0) * before / all : t0;
+    const lp = localPace(i);
+    if (!lp) return tI;
+    const a = Math.exp(-(i - from) / 8), tL = t0 + before * lp; // trust his recent pace for the next few lines, then the even spread
+    return Math.min(t1 - 0.5, a * tL + (1 - a) * tI);
   }
   function firstOpen() { const ls = L(); const i = ls.findIndex(l => !(g.lines[l.label] && (g.lines[l.label].ok || g.lines[l.label].skip))); return i < 0 ? ls.length - 1 : i; }
 
@@ -930,17 +943,28 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
       ${idx > 0 ? `<p class="small muted" style="margin-top:6px">Before it: ${esc(ls[idx - 1].words.slice(-3).join(' '))} (end of ${esc(ls[idx - 1].label)})</p>` : ''}
       ${idx < ls.length - 1 ? `<p class="small muted">After it: ${esc(ls[idx + 1].label)} ${esc(ls[idx + 1].words.slice(0, 4).join(' '))} …</p>` : ''}
       <p class="small">Video now at: <b id="now_t">—</b></p>
+      <div class="row small" style="margin-top:4px">Type the start (min:sec, e.g. 4:05.5):
+        <input id="typed" style="width:90px" placeholder="${fmt(s)}"><button class="chip" id="typedgo">Set &amp; play</button>
+        <button class="chip" id="usenow">Use the video's current time</button></div>
       <div style="margin-top:12px"><div class="small muted" style="margin-bottom:6px">Move the start (it plays the line again from the new start each time):</div>
       <div class="row">${[-5, -2, -1, -0.25].map(d => `<button class="chip" data-d="${d}">${d === -0.25 ? '−¼' : '−' + Math.abs(d)} s</button>`).join('')}
         <b style="font-size:20px;min-width:90px;text-align:center">${fmt(s)}</b>
         ${[0.25, 1, 2, 5].map(d => `<button class="chip" data-d="${d}">+${d === 0.25 ? '¼' : d} s</button>`).join('')}</div></div>`;
     document.querySelectorAll('[data-d]').forEach(b => b.onclick = () => nudge(+b.dataset.d));
+    const setTyped = () => {
+      const m = String($('#typed').value).trim().match(/^(?:(\d+):)?(\d+(?:\.\d+)?)$/);
+      if (!m) { $('#msg').innerHTML = '<span class="bad">Type the time as min:sec, e.g. 4:05.5</span>'; return; }
+      setStart((m[1] ? +m[1] * 60 : 0) + +m[2]);
+    };
+    $('#typedgo').onclick = setTyped;
+    $('#typed').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); setTyped(); } };
+    $('#usenow').onclick = () => { if (ytp && ytp.player) setStart(ytp.player.getCurrentTime()); };
     document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { if (g.video === b.dataset.v) return; stop(); g.cur[g.video] = idx; g.video = b.dataset.v; save(); idx = g.cur[g.video] != null ? g.cur[g.video] : firstOpen(); ytp.ensure(g.video); render(); });
     $('#count').textContent = `${done} of ${ls.length} lines confirmed in this video.`;
   }
   function stop() { playing = false; try { ytp.stop(); } catch (e) {} setPlayBtn(); }
   // end of the current line: where the next line would start at his pace
-  function lineEnd(i) { const ls = L(); return proposal(i) + mat(ls[i]) * pace(i + 1) + 0.3; }
+  function lineEnd(i) { const ls = L(), p = proposal(i); return i + 1 < ls.length ? Math.max(p + 1, proposal(i + 1)) + 0.3 : p + mat(ls[i]) * pace(i) + 0.3; }
   // play on from a point and keep playing until Vijay stops it (lines often start alike, so he listens as long as he needs)
   async function playFrom(a) {
     playing = true; setPlayBtn();
@@ -972,6 +996,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     confirmAt(t - 0.2); // allow for reaction time
   }
   function correct() { confirmAt(proposal(idx)); }
+  function setStart(sec) { const l = L()[idx], o = rec(l.label); o.v = g.video; o.s = +Math.max(0, sec).toFixed(2); o.ok = false; save(); $('#msg').textContent = ''; stop(); render(); setTimeout(playAround, 150); }
   function nudge(d) { const l = L()[idx], o = rec(l.label); o.v = g.video; o.s = +Math.max(0, proposal(idx) + d).toFixed(2); o.ok = false; save(); render(); stop(); setTimeout(playAround, 150); }
   function skip() { const l = L()[idx], o = rec(l.label); o.v = g.video; o.skip = true; o.ok = false; delete o.s; save(); next(); }
   function fwd() { stop(); if (idx < L().length - 1) { idx++; g.cur[g.video] = idx; save(); render(); setTimeout(playAround, 150); } }
@@ -981,14 +1006,14 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
   function exportObj() {
     const out = { version: 2, made: new Date().toISOString(), videos: S.VIDEOS, lines: {}, flags: [] };
     for (const v of ['namakam', 'chamakam']) {
-      const ls = linesOf(v), p = defaultPace(v);
+      const ls = linesOf(v), p = defaultPace(v) * 1.0;
       ls.forEach((l, i) => {
         const o = g.lines[l.label]; if (!o) return;
         if (o.skip) { out.lines[l.label] = { v, skip: true }; return; }
         if (!o.ok) return;
         let e = null;
         for (let k = i + 1; k < ls.length; k++) { const n = g.lines[ls[k].label]; if (n && n.ok && !n.skip) { if (k === i + 1) e = n.s - 0.05; break; } }
-        if (e == null) e = o.s + mat(l) * p;
+        if (e == null) e = o.s + w(ls, i) * p;
         out.lines[l.label] = { v, s: o.s, e: +Math.max(o.s + 0.5, e).toFixed(2) };
       });
     }
