@@ -741,12 +741,22 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
     rates() { try { return this.player.getAvailablePlaybackRates(); } catch (e) { return []; } }
     isPlaying() { try { return this.player && this.player.getPlayerState() === 1; } catch (e) { return false; } }
     async playFrom(videoKey, s, rate) { // play on from a point; the learner stops it (or Record does)
-      this.token++;
+      const my = ++this.token;
       await this.ensure(videoKey);
       const p = this.player; this.rate = rate || 1;
       p.seekTo(Math.max(0, s), true); p.playVideo();
       try { p.setPlaybackRate(this.rate); } catch (e) {}
-      for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 100)); if (p.getPlayerState() === 1) return true; }
+      // an ad (or a phone that needs a tap) can hold the start: wait for it, then make sure we are at the right place
+      const t0 = performance.now(); let warned = false, lastSeek = t0;
+      while (performance.now() - t0 < 90000) {
+        await new Promise(r => setTimeout(r, 150));
+        if (my !== this.token) return false;
+        let t = 0; try { t = p.getCurrentTime(); } catch (e) {}
+        const st = p.getPlayerState();
+        if (st === 1 && t >= s - 1.5 && t < s + 30) { if (warned) this.onStatus('go'); return true; }
+        if (st === 1 && performance.now() - lastSeek > 1500) { p.seekTo(Math.max(0, s), true); lastSeek = performance.now(); }
+        if (!warned && performance.now() - t0 > 3500) { warned = true; this.onStatus('wait'); }
+      }
       return 'blocked';
     }
     stop() { this.token++; try { this.player && this.player.pauseVideo(); } catch (e) {} }
@@ -762,16 +772,21 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
       p.playVideo();
       try { p.setPlaybackRate(this.rate); } catch (er) {}
       const t0 = performance.now();
-      let lastT = -1, stuckSince = performance.now(), started = false, everPlaying = false;
+      let lastT = -1, stuckSince = performance.now(), started = false, everPlaying = false, warned = false, lastSeek = t0;
       return new Promise(resolve => {
         const tick = () => {
           if (my !== this.token || this.err) return resolve(false);
           let t = 0; try { t = p.getCurrentTime(); } catch (er) {}
           const st = p.getPlayerState ? p.getPlayerState() : -1;
           if (st === 1) everPlaying = true;
-          if (!everPlaying && performance.now() - t0 > 4000 && st !== 3) { try { p.pauseVideo(); } catch (er) {} return resolve('blocked'); }
+          // an ad, or a phone that needs a tap on the video, can hold the start: tell the learner once and keep waiting
+          if (!started && !warned && performance.now() - t0 > 3500) { warned = true; this.onStatus('wait'); }
+          if (!started && performance.now() - t0 > 90000) { try { p.pauseVideo(); } catch (er) {} return resolve(everPlaying ? false : 'blocked'); }
           if (st === 1 && Math.abs(p.getPlaybackRate() - this.rate) > 0.01) { try { p.setPlaybackRate(this.rate); } catch (er) {} }
-          if (!started) { if (t >= s - 1 && t < e - 0.05) started = true; else { setTimeout(tick, 40); return; } } // wait for the seek to land
+          if (!started) {
+            if (st === 1 && t >= s - 1 && t < e - 0.05) { started = true; if (warned) this.onStatus('go'); stuckSince = performance.now(); }
+            else { if (st === 1 && performance.now() - lastSeek > 1500) { p.seekTo(Math.max(0, s - 0.05), true); lastSeek = performance.now(); } setTimeout(tick, 40); return; } // after an ad the video may start from the top: seek again
+          }
           if (t >= e) { p.pauseVideo(); return resolve(true); }
           if (t !== lastT) { lastT = t; stuckSince = performance.now(); }
           // an ad or buffering may hold the clock still; give up after 90 s of no progress
@@ -1048,7 +1063,7 @@ After you confirm, it moves to the next line and plays it. Its guesses improve a
   document.addEventListener('keyup', e => { if (e.code === 'Space' && e.target.tagName === 'BUTTON') e.preventDefault(); });
   window.addEventListener('blur', () => setTimeout(() => { const a = document.activeElement; if (a && a.tagName === 'IFRAME') { a.blur(); window.focus(); } }, 150));
   window.addEventListener('DOMContentLoaded', () => {
-    ytp = new S.LinePlayer('yt', (k, v) => { if (k === 'error') $('#msg').innerHTML = '<span class="bad">YouTube error ' + v + '.</span>'; });
+    ytp = new S.LinePlayer('yt', (k, v) => { if (k === 'wait') $('#msg').innerHTML = 'If an ad is showing on the video, tap <b>Skip</b> (or let it finish): the line plays straight after. If nothing is playing, tap ▶ on the video once.'; if (k === 'go') $('#msg').textContent = ''; if (k === 'error') $('#msg').innerHTML = '<span class="bad">YouTube error ' + v + '.</span>'; });
     ytp.ensure(g.video).catch(e => { $('#msg').textContent = e.message; });
     idx = g.cur[g.video] != null ? g.cur[g.video] : firstOpen();
     $('#play').onclick = () => { if (playing) stop(); else playAround(); };
