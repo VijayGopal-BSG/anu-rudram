@@ -91,6 +91,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
  * Works in the browser (window.ChantEngine) and in Node (module.exports). */
 (function (root) {
   'use strict';
+  const AP_F0 = +(typeof process !== 'undefined' && process.env.AP_F0 || 0.55), AP_V = +(typeof process !== 'undefined' && process.env.AP_V || 0.45);
   const SR = 16000, HOP = 160, WIN = 400, TAU_MIN = 27, TAU_MAX = 267; // 60–600 Hz
   const FRAME_S = HOP / SR;
 
@@ -151,7 +152,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
       }
       if (best < 0) { for (let tau = TAU_MIN; tau <= TAU_MAX; tau++) if (d[tau] < bestVal) { bestVal = d[tau]; best = tau; } }
       let f0 = 0;
-      if (bestVal < 0.35) {
+      if (bestVal < AP_F0) {
         let t = best;
         if (best > TAU_MIN && best < TAU_MAX) {
           const a = d[best - 1], b = d[best], c = d[best + 1], den = a - 2 * b + c;
@@ -168,6 +169,13 @@ details[open] > summary .chev{transform:rotate(90deg)}
   const pct = (a, p) => { if (!a.length) return NaN; const s = Float64Array.from(a).sort(); const i = Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1)))); return s[i]; };
   const st = f => 12 * Math.log2(f / 55);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  // most common pitch (smoothed histogram peak, 0.1 st bins)
+  function modeOf(v) {
+    if (!v.length) return 0;
+    const lo = Math.min(...v) - 1, nb = Math.ceil((Math.max(...v) + 1 - lo) / 0.1) + 1, h = new Float64Array(nb);
+    for (const x of v) { const b = Math.round((x - lo) / 0.1); for (let j = b - 4; j <= b + 4; j++) if (j >= 0 && j < nb) h[j] += Math.exp(-0.5 * ((j - b) / 2) ** 2); }
+    let bi = 0; for (let j = 1; j < nb; j++) if (h[j] > h[bi]) bi = j; return lo + bi * 0.1;
+  }
 
   // frames -> features: dB energy (smoothed), voiced flag, semitone pitch (octave-corrected)
   function features(frames) {
@@ -179,7 +187,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     const voiced = new Uint8Array(n), pitch = new Float64Array(n).fill(NaN), E = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       E[i] = 20 * Math.log10(frames[i].rms + 1e-7);
-      if (frames[i].f0 > 0 && frames[i].rms > gate && frames[i].ap < 0.3) { voiced[i] = 1; pitch[i] = st(frames[i].f0); }
+      if (frames[i].f0 > 0 && frames[i].rms > gate && frames[i].ap < AP_V) { voiced[i] = 1; pitch[i] = st(frames[i].f0); }
     }
     // octave correction against a running median of voiced pitch
     const vp = []; for (let i = 0; i < n; i++) if (voiced[i]) vp.push(i);
@@ -263,6 +271,20 @@ details[open] > summary .chev{transform:rotate(90deg)}
       if (F.gap && (F.gap[a + t - 1] > 0 || F.gap[a + t - 2] > 0 || F.gap[a + t] > 0)) bc[t] -= 3; // a pause is a natural boundary
     }
     const LD = opt.lambdaDur || 1.2, LP = opt.lambdaPitch || 0.08;
+    // level-aware cost (when the expected levels are given): prefix sums of how badly each frame fits low / middle / high
+    const LV = opt.levels ? (opt.lambdaLevel === undefined ? +(typeof process !== 'undefined' && process.env.LV || 3) : opt.lambdaLevel) : 0;
+    let cl = null;
+    if (LV > 0) {
+      const vp = []; for (let t = 0; t < T; t++) { const p = F.pitch[a + t]; if (F.voiced[a + t] && !isNaN(p)) vp.push(p); }
+      const M = modeOf(vp);
+      cl = { low: new Float64Array(T + 1), mid: new Float64Array(T + 1), high: new Float64Array(T + 1) };
+      for (let t = 0; t < T; t++) {
+        const p = F.pitch[a + t], v = F.voiced[a + t] && !isNaN(p), d = v ? p - M : 0;
+        cl.low[t + 1] = cl.low[t] + (v ? clamp((d + 0.8) / 0.8, 0, 1) : 0);
+        cl.mid[t + 1] = cl.mid[t] + (v ? clamp((Math.abs(d) - 0.45) / 0.8, 0, 1) : 0);
+        cl.high[t + 1] = cl.high[t] + (v ? clamp((0.5 - d) / 0.8, 0, 1) : 0);
+      }
+    }
     const INF = 1e18;
     const D = new Float64Array((N + 1) * (T + 1)).fill(INF), BP = new Int32Array((N + 1) * (T + 1)).fill(-1);
     D[0] = 0;
@@ -283,6 +305,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
           const nv = cn[t] - cn[s];
           if (nv > 1) { const m = (cs[t] - cs[s]) / nv; c += LP * Math.min(9, (cs2[t] - cs2[s]) / nv - m * m); }
           else c += 0.8; // a syllable with no voiced frames is unlikely
+          if (cl && nv > 1) { const lv = opt.levels[k - 1] === 'held' ? 'high' : opt.levels[k - 1]; const s2 = s + Math.floor(L * 0.3); const n2 = cn[t] - cn[s2]; if (n2 > 0) c += LV * (cl[lv][t] - cl[lv][s2]) / n2; }
           if (k < N) c += bc[t];
           if (c < best) { best = c; arg = s; }
         }
@@ -424,7 +447,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     for (let k = 0; k < N; k++) { stats.push(sylStats(F, bounds[k], bounds[k + 1])); times.push((bounds[k] + bounds[k + 1]) / 2 * FRAME_S); }
     const C = classify(stats, times, syl.map(s => s.lv));
     const per = [];
-    let wsum = 0, wok = 0, twoLevel = 0, unclear = 0;
+    let wsum = 0, wok = 0, twoLevel = 0, unclear = 0, mS = 0, mO = 0;
     const sung = !syl.some(x => x.lv !== 'mid' && !x.gum); // a sung verse with no svara marks (Guru prayer): levels are not judged
     for (let k = 0; k < N; k++) {
       const exp = syl[k].lv, o = C.flat ? (stats[k].ok ? 'mid' : null) : C.obs[k];
@@ -437,11 +460,15 @@ details[open] > summary .chev{transform:rotate(90deg)}
         ok = e === ob;
         if (Math.abs(e - ob) === 2) twoLevel++;
         wsum += w; if (ok) wok += w;
+        if (exp !== 'mid') { mS += w; if (ok) mO += w; }
       }
       const ot = i => (F.idx ? F.idx[Math.min(i, F.n - 1)] + (i >= F.n ? 1 : 0) : i) * FRAME_S;
       per.push({ k, exp, obs: o, ok, t0: ot(bounds[k]), t1: ot(bounds[k + 1]), d: (o === 'high' && C.dpk) ? C.dpk[k] : C.d[k] });
     }
-    const svaraAcc = wsum ? wok / wsum : 0;
+    // balanced: the marked syllables (low/high) count for as much as all the unmarked ones together, so a flat chant cannot pass on its middle notes
+    const BAL = +(typeof process !== 'undefined' && process.env.BAL || 0.5);
+    const uS = wsum - mS, uO = wok - mO;
+    const svaraAcc = !wsum ? 0 : (BAL && mS >= 2 && uS >= 1) ? (BAL * (mO / mS) + (1 - BAL) * (uO / uS)) : wok / wsum;
     // timing
     const dur = (bounds[N] - bounds[0]) * FRAME_S;
     const mat = syl.reduce((s, x) => s + x.wt, 0);
@@ -452,7 +479,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (refPace) {
       if (pace < refPace * 0.7) { timing -= 40; tim.notes.push('rushed'); }
       else if (pace > refPace * 3.5) { timing -= 20; tim.notes.push('slow'); }
-    } else if (pace < 0.17) { timing -= 40; tim.notes.push('rushed'); } // K. Suresh chants about 0.25 s per matra
+    } else if (pace < +(typeof process !== 'undefined' && process.env.RUSH || 0.12)) { timing -= 40; tim.notes.push('rushed'); } // K. Suresh chants about 0.25 s per matra
     // long vs short
     const ls = [], ss = [];
     for (let k = 0; k < N; k++) { const L = (bounds[k + 1] - bounds[k]) * FRAME_S; if (syl[k].wt >= 2) ls.push(L); else if (!syl[k].gum) ss.push(L); }
@@ -461,20 +488,29 @@ details[open] > summary .chev{transform:rotate(90deg)}
     const inner = [];
     for (let k = 0; k < N - 1; k++) {
       if (syl[k].w !== syl[k + 1].w) continue;
+      if (syl.filter(x => x.w === syl[k].w).length > +(typeof process !== 'undefined' && process.env.MAXW || 6)) continue; // a breath inside a long sandhi-joined run of words is natural
       const lo = Math.max(bounds[k + 1] - 4, bounds[k] + 1), hi = Math.min(bounds[k + 1] + 3, bounds[k + 2] - 1);
       for (let c = lo; c <= hi; c++) if (F.gap && F.gap[c] + 4 >= 35) { inner.push(syl[k].w); break; }
     }
     const innerWords = [...new Set(inner)];
+    // a word left out: the segmentation has to squeeze several syllables into almost nothing
+    const totW = syl.reduce((x, y) => x + y.wt, 0), span = bounds[N] - bounds[0];
+    let squeezed = 0; for (let k = 0; k < N; k++) { const e = span * syl[k].wt / totW; if (bounds[k + 1] - bounds[k] <= +(typeof process !== 'undefined' && process.env.SQF || 0.35) * e) squeezed++; }
+    tim.squeezed = squeezed;
+    const SQN = +(typeof process !== 'undefined' && process.env.SQN || 3);
+    if (squeezed >= Math.max(SQN, Math.ceil(N * 0.1))) { timing -= 30; tim.notes.push('missing'); }
     if (innerWords.length) { timing -= Math.min(2, innerWords.length) * 20; tim.notes.push('pause'); }
     timing = Math.max(0, timing);
     // svara points: 95%+ of syllables right = full marks; 60% or less (about what a wrong line gets) = none
-    const svaraPts = 100 * clamp((svaraAcc - 0.6) / 0.35, 0, 1);
+    const SV_LO = +(typeof process !== 'undefined' && process.env.SV_LO || 0.65), SV_HI = +(typeof process !== 'undefined' && process.env.SV_HI || 0.9);
+    const svaraPts = 100 * clamp((svaraAcc - SV_LO) / (SV_HI - SV_LO), 0, 1);
     let score = Math.round(0.7 * svaraPts + 0.3 * timing);
     const target = (opt && opt.target) || 75;
     const nMarked = syl.filter(s => s.lv !== 'mid' && !s.gum).length;
     if (C.flat && nMarked >= 3 && score >= target - 10) score = target - 10;
     if (twoLevel > 0 && score >= target) score = target - 1;
-    return { score, svaraAcc, svaraPts, timing, twoLevel, unclear, sung, flat: C.flat && !sung, per, pace, timingNotes: tim.notes, innerWords, spread: C.spread, cls: C };
+    if (tim.notes.includes('missing') && score >= target) score = target - 5; // part of the line seems to be left out
+    return { score, svaraAcc, svaraPts, timing, twoLevel, unclear, sung, flat: C.flat && !sung, per, pace, timingNotes: tim.notes, squeezed: tim.squeezed, innerWords, spread: C.spread, cls: C };
   }
 
   // ---------- feedback text ----------
@@ -498,6 +534,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
     }
     if (out.length < 2 && res.timingNotes.includes('rushed')) out.push('You chanted faster than the teacher. Slow down and give each syllable its time.');
     if (out.length < 2 && res.timingNotes.includes('pause')) out.push(`Don’t pause inside a word (“${words[res.innerWords[0]]}”). Breathe between words.`);
+    if (res.timingNotes.includes('missing')) out.unshift('Part of the line seems to be missing. Read along with the text and chant every word.');
     if (out.length < 2 && res.timingNotes.includes('long')) out.push('Hold the long vowels (ā, ī, ū, e, o) about twice as long as the short ones.');
     if (out.length < 2 && res.timingNotes.includes('slow')) out.push('Try to keep the line flowing, a little closer to the teacher’s pace.');
     if (!out.length) out.push('Good. The marked syllables went where they should.');
@@ -514,12 +551,12 @@ details[open] > summary .chev{transform:rotate(90deg)}
     const voicedFrac = (() => { let c = 0; for (let t = a; t < b; t++) c += F.voiced[t]; return T > 0 ? c / T : 0; })();
     const base = { snr: F.snr, voicedFrac, dur: T * FRAME_S };
     if (T * FRAME_S < 0.12 * N || T < 20) return Object.assign(base, { ok: false, reason: 'short' });
-    if (F.snr < 12) return Object.assign(base, { ok: false, reason: 'noisy' });
-    if (voicedFrac < 0.35) return Object.assign(base, { ok: false, reason: 'unvoiced' });
+    if (!opt.noGuards && F.snr < 9) return Object.assign(base, { ok: false, reason: 'noisy' });
+    if (!opt.noGuards && voicedFrac < 0.35) return Object.assign(base, { ok: false, reason: 'unvoiced' });
     const Fc = compress(F, a, b);
     const nc = nucleiCount(Fc, 0, Fc.n), ratio = nc / N;
     base.nuclei = nc; base.ratio = ratio;
-    if (ratio < 0.55 || ratio > 1.6) return Object.assign(base, { ok: false, reason: 'count' });
+    if (!opt.noGuards && (ratio < 0.3 || ratio > 1.6)) return Object.assign(base, { ok: false, reason: 'count' });
     const w = []; lines.forEach(l => l.syl.forEach(s => w.push(s.wt)));
     // multi-line takes: first find the line boundaries (pauses are strong hints), then the syllables in each line
     let lineB, whole = null;
@@ -529,7 +566,8 @@ details[open] > summary .chev{transform:rotate(90deg)}
     if (lines.length > 1 && (lines.length <= 6 || fewPauses)) {
       // short multi-line takes: one syllable-level DP over the whole take copes best with changes of pace
       const w = []; lines.forEach(l => l.syl.forEach(s => w.push(s.wt)));
-      whole = segment(Fc, 0, Fc.n, w, lines.length > 15 ? { band: Math.max(80, Math.round(Fc.n * 0.15)) } : {});
+      const lvAll = []; lines.forEach(l => l.syl.forEach(x => lvAll.push(x.lv)));
+      whole = segment(Fc, 0, Fc.n, w, Object.assign(lines.length > 15 ? { band: Math.max(80, Math.round(Fc.n * 0.15)) } : {}, { levels: lvAll }));
       if (!whole) return Object.assign(base, { ok: false, reason: 'segment' });
       lineB = [0]; let off = 0; lines.forEach(l => { off += l.syl.length; lineB.push(whole[off]); });
     } else if (lines.length > 1) {
@@ -542,7 +580,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
       const a0 = lineB[li], b0 = lineB[li + 1];
       let bl;
       if (whole) { let off = 0; for (let j = 0; j < li; j++) off += lines[j].syl.length; bl = whole.slice(off, off + wl.length + 1); }
-      else bl = (b0 - a0 >= wl.length * 2) ? segment(Fc, a0, b0, wl, {}) : null;
+      else bl = (b0 - a0 >= wl.length * 2) ? segment(Fc, a0, b0, wl, { levels: lines[li].syl.map(x => x.lv) }) : null;
       if (!bl) { // line too short in the take: spread evenly so it scores (badly) rather than failing the whole take
         bl = []; const W = wl.reduce((x, y) => x + y, 0); let acc = 0; bl.push(a0);
         wl.forEach(x => { acc += x; bl.push(Math.round(a0 + (b0 - a0) * acc / W)); });
@@ -1067,7 +1105,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
         recording = true;
         await rec.start((f, i, peak) => {
           if (my !== takeToken) return;
-          const v = f.f0 > 0 && f.ap < 0.3 && f.rms > 0.004;
+          const v = f.f0 > 0 && f.ap < 0.45 && f.rms > 0.004;
           if (v) { started = true; quiet = 0; } else if (started) quiet++;
           if (i % 4 === 0) { const el = $('#lvl'); if (el) el.style.width = Math.min(100, Math.round(peak * 220)) + '%'; }
           if (started && quiet > silenceStop) finish();
