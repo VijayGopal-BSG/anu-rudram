@@ -1161,6 +1161,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
       ${exportDue ? '<p class="note small">Progress is kept on this phone only. Tap “End sitting” to send it to Vijay as a backup.</p>' : ''}
       <div class="card"><div class="muted small">Next</div><h2 style="margin:4px 0 10px">${esc(stepTitle(n))}</h2>
         <button class="primary big" id="go">Start</button></div>
+      ${st.done.length ? `<div class="card"><b>Practise again</b><p class="small muted">Open any mantra you have learned and practise it as often as you like. Your progress is kept. All mantras are also listed under Progress below.</p><div class="row">${st.done.slice(-6).reverse().map(id => C.groupById[id]).filter(Boolean).map(g => `<button class="chip" data-open="${g.id}">${esc(g.title.replace('Lines ', ''))}</button>`).join('')}</div></div>` : ''}
       <div class="card"><div class="spread"><b>Progress</b><span class="small muted">${learned} of ${total} mantras</span></div><div class="bar" style="margin:8px 0"><i style="width:${(learned / total * 100).toFixed(1)}%"></i></div>
         <ul class="clean">${secs}</ul></div>
       <div class="row"><button id="end">End sitting &amp; send progress</button><button id="settings">Settings</button><button id="help">Help</button></div>`;
@@ -1189,10 +1190,15 @@ details[open] > summary .chev{transform:rotate(90deg)}
     let step = startStep != null ? startStep : Math.max(0, lines.findIndex(l => !linePassed(l)));
     if (startStep == null && lines.every(linePassed)) step = G(gid).whole ? lines.length + 1 : lines.length;
     const nSteps = lines.length + 2;
-    const stepsBar = () => '<div class="steps">' + Array.from({ length: nSteps }, (_, i) => `<span class="${i < step ? 'done' : i === step ? 'cur' : ''}"></span>`).join('') + '</div>';
+    // any line, or the whole mantra, can be opened at any time; the meaning once the whole mantra has passed
+    const canGo = i => i <= lines.length || G(gid).whole || G(gid).done;
+    const stepName = i => i < lines.length ? 'Line ' + lines[i].label : i === lines.length ? 'Whole mantra' : 'Meaning';
+    const stepsBar = () => '<div class="steps">' + Array.from({ length: nSteps }, (_, i) => `<span role="button" tabindex="0" title="${stepName(i)}" data-step="${canGo(i) ? i : ''}" style="${canGo(i) ? 'cursor:pointer' : ''}" class="${i < step ? 'done' : i === step ? 'cur' : ''}"></span>`).join('') + '</div>' +
+      `<div class="row small" style="margin-top:6px">${Array.from({ length: nSteps }, (_, i) => i === step || !canGo(i) ? '' : `<button class="chip" data-step="${i}">${stepName(i)}</button>`).join('')}</div>`;
     function render() {
       leave();
       setHead(sec.title, g.title, stepsBar());
+      head.querySelectorAll('[data-step]').forEach(b => { if (b.dataset.step !== '') b.onclick = () => { step = +b.dataset.step; render(); }; });
       if (step < lines.length) return renderLine(lines[step]);
       if (step === lines.length) return renderWhole();
       return renderMeaning();
@@ -1216,11 +1222,12 @@ details[open] > summary .chev{transform:rotate(90deg)}
       const la = $('#listenall'); if (la) { la.disabled = !canListen(lines.map(l => l.label)); la.onclick = () => listen(lines.map(l => l.label), 'line', la); }
       const nav = () => {
         const passed = linePassed(line);
-        $('#nav').innerHTML = (passed ? `<button class="primary big" id="next">Next ›</button>` : '') +
+        $('#nav').innerHTML = (step > 0 ? `<button class="big" id="prev">‹ Previous line</button>` : '') + (passed ? `<button class="primary big" id="next">Next ›</button>` : '') +
           (!passed && visitFails >= 5 ? `<button class="big" id="skip">Move on — we’ll come back to this line</button>` : '') +
           (st.settings.teacher && !passed ? `<button id="ear">Teacher: learnt by ear</button>` : '') +
           (lines.length > 1 ? `<button class="big" id="whole">Chant the whole mantra ›</button>` : '');
         const nx = $('#next'); if (nx) nx.onclick = () => { step++; render(); };
+        const pv = $('#prev'); if (pv) pv.onclick = () => { step--; render(); };
         const sk = $('#skip'); if (sk) sk.onclick = () => { s.flag = true; s.passed = true; s.provisional = true; save(); step++; render(); };
         const ea = $('#ear'); if (ea) ea.onclick = () => { s.ear = true; s.flag = false; save(); nav(); };
         const wh = $('#whole'); if (wh) wh.onclick = () => { step = lines.length; render(); };
@@ -1264,7 +1271,8 @@ details[open] > summary .chev{transform:rotate(90deg)}
       showPlayer(false);
       app.innerHTML = `<div class="card"><b>Meaning</b><p>${esc(g.meaning)}</p><p class="muted small">${g.keywords.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p></div>
         <div class="card"><p>Now open your Guru in the ChatGPT app and say:</p><p><b>“Meaning of ${esc(g.title.replace('Lines ', 'lines '))}”</b></p><p class="small muted">Tell it the meaning in your own words; it will help you fill any gaps.</p></div>
-        <div class="navbar"><button class="primary big" id="fin">Done — mantra learned ✓</button></div>`;
+        <div class="navbar row">${G(gid).done ? '<button class="big" id="again">Practise this mantra again</button>' : ''}<button class="primary big" id="fin">${G(gid).done ? 'Done' : 'Done — mantra learned ✓'}</button></div>`;
+      const ag = $('#again'); if (ag) ag.onclick = () => { step = 0; render(); };
       $('#fin').onclick = () => {
         const gg = G(gid); gg.meaning = true;
         if (!gg.done) { gg.done = true; gg.doneAt = Date.now(); if (!st.done.includes(gid)) st.done.push(gid); }
