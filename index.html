@@ -1207,20 +1207,23 @@ details[open] > summary .chev{transform:rotate(90deg)}
           <details class="small" style="margin-top:6px"><summary class="muted"><span class="chev">›</span> Meaning and key words</summary><p>${esc(g.meaning)}</p><p class="muted">${g.keywords.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</p>${g.notes.map(n => '<p class="note">' + esc(n) + '</p>').join('')}</details></div>
         ${listenNote([line.label], 'line')}
         <div class="row">${speedChips()}</div>
-        <div class="row" style="margin:10px 0">${listenButton([line.label], '▶ Listen')}</div>
-        <p class="small muted">Listen to the line (pause the video when it’s done), then chant it back.</p>
+        <div class="row" style="margin:10px 0">${listenButton([line.label], '▶ Listen')}${lines.length > 1 ? `<button class="big" id="listenall" data-label="▶ Whole mantra (${lines.length} lines)">▶ Whole mantra (${lines.length} lines)</button>` : ''}</div>
+        <p class="small muted">Listen to the line (pause the video when it’s done), then chant it back.${lines.length > 1 ? ' This mantra has ' + lines.length + ' lines: they are practised one at a time, then together. If you already know them, use <b>Chant the whole mantra</b> below.' : ''}</p>
         <div id="rec"></div><div id="res"></div>
         <div class="navbar row" id="nav"></div>`;
       bindSpeed();
       const lb = $('#listen'); lb.onclick = () => listen([line.label], 'line', lb);
+      const la = $('#listenall'); if (la) { la.disabled = !canListen(lines.map(l => l.label)); la.onclick = () => listen(lines.map(l => l.label), 'line', la); }
       const nav = () => {
         const passed = linePassed(line);
         $('#nav').innerHTML = (passed ? `<button class="primary big" id="next">Next ›</button>` : '') +
           (!passed && visitFails >= 5 ? `<button class="big" id="skip">Move on — we’ll come back to this line</button>` : '') +
-          (st.settings.teacher && !passed ? `<button id="ear">Teacher: learnt by ear</button>` : '');
+          (st.settings.teacher && !passed ? `<button id="ear">Teacher: learnt by ear</button>` : '') +
+          (lines.length > 1 ? `<button class="big" id="whole">Chant the whole mantra ›</button>` : '');
         const nx = $('#next'); if (nx) nx.onclick = () => { step++; render(); };
         const sk = $('#skip'); if (sk) sk.onclick = () => { s.flag = true; s.passed = true; s.provisional = true; save(); step++; render(); };
         const ea = $('#ear'); if (ea) ea.onclick = () => { s.ear = true; s.flag = false; save(); nav(); };
+        const wh = $('#whole'); if (wh) wh.onclick = () => { step = lines.length; render(); };
       };
       nav();
       recorderUI($('#rec'), [line], res => {
@@ -1254,7 +1257,7 @@ details[open] > summary .chev{transform:rotate(90deg)}
         const tp = takePass(res, target());
         box.innerHTML = `<div class="${tp.pass ? 'good' : 'badbox'}"><b>${tp.pass ? '✓ The whole mantra is good' : 'Not yet — see the lines below'}</b> <span class="small muted">score ${tp.score}</span></div>` +
           res.lines.map((r, i) => `<details ${r.score < target() ? 'open' : ''}><summary>${esc(r.label)} — ${r.score} ${r.score >= target() ? '<span class="tick">✓</span>' : ''}${isEar(r.label) ? ' <span class="muted">(by ear)</span>' : ''}</summary>${lineResultHTML(lines[i], r, true)}</details>`).join('');
-        if (tp.pass) { G(gid).whole = true; save(); $('#nav').innerHTML = '<button class="primary big" id="next">Next: the meaning ›</button>'; $('#next').onclick = () => { step++; render(); }; }
+        if (tp.pass) { res.lines.forEach((r, i) => { if (r.score >= target()) { const ls = L(lines[i].label); ls.passed = true; ls.flag = false; ls.provisional = false; ls.a.push(r.score); ls.a = ls.a.slice(-10); } }); G(gid).whole = true; save(); $('#nav').innerHTML = '<button class="primary big" id="next">Next: the meaning ›</button>'; $('#next').onclick = () => { step++; render(); }; }
       });
     }
     function renderMeaning() {
